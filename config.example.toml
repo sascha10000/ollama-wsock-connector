@@ -1,0 +1,11 @@
+[websocket]
+url = "wss://server.example.com/ollama-bridge"
+# Optional Authorization header sent on the WS upgrade request.
+# auth_header = "Bearer your-token-here"
+
+[ollama]
+url = "http://127.0.0.1:11434"
+
+[client]
+id = "workstation-1"
+log_level = "info"

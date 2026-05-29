@@ -1,0 +1,103 @@
+name: Release
+
+# Triggers on any tag push. Push a tag like `v0.1.0` and this workflow will
+# build release binaries for the three target platforms and attach them to a
+# GitHub Release named after the tag.
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS Apple Silicon. macos-14 runners are aarch64 natively, so we
+          # build for the host target without cross-compilation.
+          - os: macos-14
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          # Linux x86_64. ubuntu-22.04 has glibc 2.35, which is broad enough
+          # to run on most current Linux distributions.
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          # Windows x86_64.
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry, index, and target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package (unix)
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          stage="ollama-wsock-connector-${GITHUB_REF_NAME}-${{ matrix.target }}"
+          mkdir -p "dist/$stage"
+          cp "target/${{ matrix.target }}/release/ollama-wsock-connector" "dist/$stage/"
+          cp README.md config.example.toml "dist/$stage/"
+          tar -czf "dist/$stage.tar.gz" -C dist "$stage"
+          rm -rf "dist/$stage"
+
+      - name: Package (windows)
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $stage = "ollama-wsock-connector-$env:GITHUB_REF_NAME-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$stage" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/ollama-wsock-connector.exe" "dist/$stage/"
+          Copy-Item README.md, config.example.toml "dist/$stage/"
+          Compress-Archive -Path "dist/$stage" -DestinationPath "dist/$stage.zip"
+          Remove-Item -Recurse -Force "dist/$stage"
+
+      - name: Upload archive as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      # Required for softprops/action-gh-release to create the release and
+      # upload assets via the GitHub API.
+      contents: write
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create release and attach archives
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

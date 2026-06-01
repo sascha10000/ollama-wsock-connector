@@ -83,10 +83,28 @@ impl Config {
             .or_else(|| file_cfg.as_ref().and_then(|c| c.ollama.url.clone()))
             .unwrap_or_else(|| DEFAULT_OLLAMA_URL.to_string());
 
+        let client_id_from_override = overrides.client_id.is_some();
+        let client_id_from_file = file_cfg
+            .as_ref()
+            .and_then(|c| c.client.id.as_ref())
+            .is_some();
         let client_id = overrides
             .client_id
             .or_else(|| file_cfg.as_ref().and_then(|c| c.client.id.clone()))
             .unwrap_or_else(|| format!("client-{}", uuid::Uuid::new_v4()));
+
+        if !client_id_from_override && !client_id_from_file {
+            if let Some(p) = path {
+                if let Err(e) = persist_client_id(p, &client_id) {
+                    tracing::warn!(
+                        path = %p.display(),
+                        error = ?e,
+                        "could not persist generated client_id to config file; \
+                         a new id will be generated on next start"
+                    );
+                }
+            }
+        }
 
         let log_level = overrides
             .log_level
@@ -105,6 +123,32 @@ impl Config {
             log_level,
         })
     }
+}
+
+fn persist_client_id(path: &Path, client_id: &str) -> Result<()> {
+    let original = std::fs::read_to_string(path)
+        .with_context(|| format!("reading config file {} for update", path.display()))?;
+    let mut doc: toml_edit::DocumentMut = original
+        .parse()
+        .with_context(|| format!("re-parsing config file {} as editable TOML", path.display()))?;
+
+    let client = doc
+        .entry("client")
+        .or_insert_with(|| toml_edit::Item::Table(toml_edit::Table::new()));
+    let table = client
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("[client] in config file is not a table"))?;
+    table.set_implicit(false);
+    table["id"] = toml_edit::value(client_id);
+
+    std::fs::write(path, doc.to_string())
+        .with_context(|| format!("writing updated config file {}", path.display()))?;
+    tracing::info!(
+        path = %path.display(),
+        client_id,
+        "wrote generated client_id back to config file"
+    );
+    Ok(())
 }
 
 #[cfg(test)]
@@ -132,5 +176,59 @@ mod tests {
     fn missing_ws_url_errors() {
         let err = Config::load(None, ConfigOverrides::default()).unwrap_err();
         assert!(err.to_string().contains("websocket url not configured"));
+    }
+
+    #[test]
+    fn missing_client_id_is_persisted_to_config_file() {
+        let path = std::env::temp_dir()
+            .join(format!("owsc-test-{}.toml", uuid::Uuid::new_v4()));
+        let original = "\
+# user-written comment that must survive
+[websocket]
+url = \"ws://example.test\"
+
+[client]
+log_level = \"debug\"
+";
+        std::fs::write(&path, original).unwrap();
+
+        let cfg = Config::load(Some(&path), ConfigOverrides::default()).unwrap();
+        assert!(cfg.client_id.starts_with("client-"));
+
+        let updated = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            updated.contains("user-written comment that must survive"),
+            "comment was lost:\n{updated}"
+        );
+        assert!(
+            updated.contains(&format!("id = \"{}\"", cfg.client_id)),
+            "client_id was not written back:\n{updated}"
+        );
+
+        // Re-loading without overrides must yield the same id (no second rewrite).
+        let cfg2 = Config::load(Some(&path), ConfigOverrides::default()).unwrap();
+        assert_eq!(cfg.client_id, cfg2.client_id);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn cli_override_does_not_persist_to_file() {
+        let path = std::env::temp_dir()
+            .join(format!("owsc-test-{}.toml", uuid::Uuid::new_v4()));
+        let original = "[websocket]\nurl = \"ws://example.test\"\n";
+        std::fs::write(&path, original).unwrap();
+
+        let overrides = ConfigOverrides {
+            client_id: Some("ephemeral-cli-id".into()),
+            ..ConfigOverrides::default()
+        };
+        let cfg = Config::load(Some(&path), overrides).unwrap();
+        assert_eq!(cfg.client_id, "ephemeral-cli-id");
+
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, original, "file should be untouched when CLI overrides client_id");
+
+        let _ = std::fs::remove_file(&path);
     }
 }

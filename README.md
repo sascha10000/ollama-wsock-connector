@@ -197,9 +197,15 @@ set via a CLI flag or an environment variable; CLI > env > file in precedence.
 | WebSocket URL              | `[websocket].url`         | `--ws-url`           | `OWSC_WS_URL`         | *(required)*                  |
 | WebSocket auth header      | `[websocket].auth_header` | `--ws-auth-header`   | `OWSC_WS_AUTH_HEADER` | none                          |
 | Ollama base URL            | `[ollama].url`            | `--ollama-url`       | `OWSC_OLLAMA_URL`     | `http://127.0.0.1:11434`      |
-| Client identifier (hello)  | `[client].id`             | `--client-id`        | `OWSC_CLIENT_ID`      | `client-<random-uuid>`        |
+| Client identifier (hello)  | `[client].id`             | `--client-id`        | `OWSC_CLIENT_ID`      | `client-<random-uuid>` †      |
 | Tracing log level / filter | `[client].log_level`      | `--log-level`        | `OWSC_LOG_LEVEL`      | `info`                        |
 | Path to config file        | —                         | `--config <path>`    | `OWSC_CONFIG`         | `./config.toml` if it exists  |
+
+† When no client id is configured anywhere and a `config.toml` is in use, the
+generated `client-<uuid>` is written back into that file under `[client].id`,
+so the same identifier is reused on every subsequent start. Existing comments
+and other keys in the file are preserved. If the file isn't writable the
+connector keeps running but warns and a new id will be generated next start.
 
 `./ollama-wsock-connector --help` prints the full CLI surface.
 
